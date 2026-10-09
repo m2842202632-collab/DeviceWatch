@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统计分析 - DeviceWatch</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<script src="/js/common.js?v=2"></script>
+<script src="/js/echarts.min.js"></script>
+<script>
+requireLogin();
+const el = renderLayout('stats.html', '统计分析');
+function chartOf(id) {
+  const dom = document.getElementById(id);
+  return echarts.getInstanceByDom(dom) || echarts.init(dom);
+}
+el.innerHTML = `
+  <div class="grid" style="grid-template-columns: 1fr 1fr; margin-bottom:14px">
+    <div class="card"><h3>设备健康度排行</h3><div class="chart" id="healthChart"></div></div>
+    <div class="card"><h3>24 小时告警趋势</h3><div class="chart" id="trendChart"></div></div>
+  </div>
+  <div class="card">
+    <h3>设备可靠性指标（MTBF 平均无故障时间 / MTTR 平均修复时间）</h3>
+    <table class="tbl"><thead><tr>
+      <th>设备</th><th>名称</th><th>已关闭告警</th><th>MTBF（小时）</th><th>MTTR（小时）</th><th>可靠性评价</th>
+    </tr></thead><tbody id="rows"></tbody></table>
+  </div>`;
+
+async function init() {
+  const [health, trend, mtbf] = await Promise.all([
+    api('/api/dashboard/device-health'),
+    api('/api/dashboard/alert-trend'),
+    api('/api/dashboard/mtbf'),
+  ]);
+  const hc = chartOf('healthChart');
+  hc.setOption({
+    backgroundColor: 'transparent', textStyle: { color: '#7d8cab' }, tooltip: {},
+    grid: { left: 90, right: 40, top: 10, bottom: 20 },
+    xAxis: { type: 'value', max: 100 }, yAxis: { type: 'category', data: health.map(h => h.code) },
+    series: [{ type: 'bar', data: health.map(h => ({
+      value: h.score,
+      itemStyle: { color: h.score >= 80 ? '#10b981' : h.score >= 50 ? '#f59e0b' : '#ef4444' } })),
+      label: { show: true, position: 'right', color: '#7d8cab' } }],
+  });
+  const tc = chartOf('trendChart');
+  tc.setOption({
+    backgroundColor: 'transparent', textStyle: { color: '#7d8cab' },
+    tooltip: { trigger: 'axis' }, legend: { textStyle: { color: '#7d8cab' } },
+    grid: { left: 40, right: 10, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: trend.map(t => t.time.substring(6)) },
+    yAxis: { type: 'value' },
+    series: [
+      { name: '一般', type: 'line', smooth: true, data: trend.map(t => t.warn), itemStyle: { color: '#f59e0b' } },
+      { name: '严重', type: 'line', smooth: true, data: trend.map(t => t.critical), itemStyle: { color: '#ef4444' } },
+    ],
+  });
+  document.getElementById('rows').innerHTML = mtbf.map(m => {
+    const label = m.alertCount === 0 ? '<span class="badge b-green">运行良好</span>'
+      : m.mtbfHours >= 48 ? '<span class="badge b-green">稳定</span>'
+      : m.mtbfHours >= 12 ? '<span class="badge b-warn">需关注</span>'
+      : '<span class="badge b-critical">频繁故障</span>';
+    return `<tr><td><b>${esc(m.code)}</b></td><td>${esc(m.name)}</td><td>${m.alertCount}</td>
+      <td>${m.mtbfHours || '-'}</td><td>${m.mttrHours || '-'}</td><td>${label}</td></tr>`;
+  }).join('');
+  window.addEventListener('resize', () => { hc.resize(); tc.resize(); });
+}
+
+init();
+</script>
+</body>
+</html>

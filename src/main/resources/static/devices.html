@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设备管理 - DeviceWatch</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<script src="/js/common.js?v=2"></script>
+<script>
+requireLogin();
+const el = renderLayout('devices.html', '设备管理');
+el.innerHTML = `
+  <div class="card">
+    <div class="toolbar">
+      <input id="kw" placeholder="编码 / 名称搜索" style="width:220px">
+      <select id="fType"><option value="">全部类型</option></select>
+      <button class="btn primary" onclick="load(1)">查询</button>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="showEdit()">+ 新增设备</button>
+    </div>
+    <table class="tbl"><thead><tr>
+      <th>编码</th><th>名称</th><th>类型</th><th>位置</th><th>状态</th><th>最后心跳</th><th>操作</th>
+    </tr></thead><tbody id="rows"></tbody></table>
+    <div class="pager"><span id="pgInfo"></span>
+      <button class="btn small" onclick="load(page-1)">上一页</button>
+      <button class="btn small" onclick="load(Math.min(page+1, totalPages))">下一页</button>
+    </div>
+  </div>`;
+
+let page = 1, meta = null, totalPages = 1;
+const SIZE = 15;
+const rowCache = {}; // id -> 行对象，编辑按钮用 id 查，避免把 JSON 拼进 onclick 导致引号炸裂
+
+async function init() {
+  meta = await api('/api/devices/meta');
+  document.getElementById('fType').innerHTML = '<option value="">全部类型</option>' +
+    Object.entries(meta.types).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+  await load(1);
+}
+
+async function load(p) {
+  if (p < 1) return;
+  page = p;
+  const qs = new URLSearchParams({ page, size: SIZE,
+    keyword: document.getElementById('kw').value, type: document.getElementById('fType').value });
+  try {
+    const data = await api('/api/devices?' + qs.toString());
+    data.records.forEach(d => rowCache[d.id] = d);
+    document.getElementById('rows').innerHTML = data.records.map(d => `
+      <tr>
+        <td><b>${esc(d.code)}</b></td><td>${esc(d.name)}</td>
+        <td>${esc(meta.types[d.type] || d.type)}</td><td>${esc(d.location || '-')}</td>
+        <td>${devStatusBadge(d.status)}</td><td>${fmtTime(d.lastSeenAt)}</td>
+        <td><button class="btn small" onclick="showEdit(rowCache[${d.id}])">编辑</button>
+            <button class="btn small danger" onclick="del(${d.id})">删除</button></td>
+      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--muted)">暂无数据</td></tr>';
+    totalPages = Math.max(1, Math.ceil(data.total / SIZE));
+    document.getElementById('pgInfo').textContent = `第 ${page}/${totalPages} 页，共 ${data.total} 条`;
+  } catch (e) { toast(e.message); }
+}
+
+function showEdit(d) {
+  const isNew = !d;
+  d = d || {};
+  openModal(`<h3>${isNew ? '新增设备' : '编辑设备'}</h3>
+    <div class="form-row">
+      <div><label class="f">设备编码 *</label><input id="eCode" value="${esc(d.code || '')}" ${isNew ? '' : 'disabled'}></div>
+      <div><label class="f">设备名称 *</label><input id="eName" value="${esc(d.name || '')}"></div>
+    </div>
+    <div class="form-row">
+      <div><label class="f">设备类型 *</label><select id="eType" ${isNew ? '' : 'disabled'}>
+        ${Object.entries(meta.types).map(([k, v]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${v}</option>`).join('')}
+      </select></div>
+      <div><label class="f">安装位置</label><input id="eLoc" value="${esc(d.location || '')}"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveEdit(${isNew ? 'null' : d.id})">保存</button></div>`);
+}
+
+async function saveEdit(id) {
+  const body = {
+    code: document.getElementById('eCode').value.trim(),
+    name: document.getElementById('eName').value.trim(),
+    type: document.getElementById('eType').value,
+    location: document.getElementById('eLoc').value.trim(),
+  };
+  try {
+    await api(id ? `/api/devices/${id}` : '/api/devices', {
+      method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    closeModal(); toast('保存成功'); load(page);
+  } catch (e) { toast(e.message); }
+}
+
+async function del(id) {
+  if (!confirm('删除后该设备的历史遥测与告警记录仍保留，确认删除设备吗？')) return;
+  try { await api(`/api/devices/${id}`, { method: 'DELETE' }); toast('已删除'); load(1); }
+  catch (e) { toast(e.message); }
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: device-watch
+  datasource:
+    # 默认 MySQL 8.0（用户本地环境）；零依赖演示用 demo profile
+    url: jdbc:mysql://localhost:3306/device_watch?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+    consumer:
+      group-id: device-watch-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+devicewatch:
+  # 是否走真实 Kafka。false=模拟器直调接入层（无需 Kafka）；
+  # true=模拟器发 Kafka Topic，消费者接入（需 docker-compose 起 Kafka）
+  kafka.enabled: false
+  # 模拟器故障注入概率（0~1），越大越容易看到告警
+  simulator.fault-rate: 0.06
+  # 心跳超时判离线（秒）
+  offline-timeout-seconds: 90
+  # WARN 告警未确认自动升级 CRITICAL（分钟，0=关闭）
+  escalate-check-minutes: 30
+
+logging:
+  level:
+    com.devicewatch: INFO
+    org.apache.kafka: WARN

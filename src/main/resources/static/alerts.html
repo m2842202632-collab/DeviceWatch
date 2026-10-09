@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>告警中心 - DeviceWatch</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<script src="/js/common.js?v=2"></script>
+<script>
+requireLogin();
+const el = renderLayout('alerts.html', '告警中心');
+el.innerHTML = `
+  <div class="card">
+    <div class="toolbar">
+      <select id="fStatus">
+        <option value="">全部状态</option>
+        <option value="FIRING" selected>告警中</option>
+        <option value="ACKED">已确认</option>
+        <option value="RESOLVED">已关闭</option>
+      </select>
+      <select id="fLevel">
+        <option value="">全部级别</option>
+        <option value="CRITICAL">严重</option>
+        <option value="WARN">一般</option>
+      </select>
+      <select id="fDevice"><option value="">全部设备</option></select>
+      <button class="btn primary" onclick="load(1)">查询</button>
+      <div class="spacer"></div>
+      <span style="color:var(--muted);font-size:12px">每 10 秒自动刷新</span>
+    </div>
+    <table class="tbl"><thead><tr>
+      <th>级别</th><th>状态</th><th>设备</th><th>测点</th><th>触发值</th><th>峰值</th>
+      <th>触发次数</th><th>抑制次数</th><th>首次告警</th><th>操作</th>
+    </tr></thead><tbody id="rows"></tbody></table>
+    <div class="pager"><span id="pgInfo"></span>
+      <button class="btn small" onclick="load(page-1)">上一页</button>
+      <button class="btn small" onclick="load(Math.min(page+1, totalPages))">下一页</button>
+    </div>
+  </div>`;
+
+let page = 1, totalPages = 1;
+const SIZE = 15;
+
+async function init() {
+  const devs = await api('/api/devices/all');
+  document.getElementById('fDevice').innerHTML =
+    '<option value="">全部设备</option>' + devs.map(d => `<option value="${d.id}">${esc(d.code)}</option>`).join('');
+  await load(1);
+  setInterval(() => load(page, true), 10000);
+}
+
+async function load(p, silent) {
+  if (p < 1) return;
+  page = p;
+  const qs = new URLSearchParams({
+    page, size: SIZE,
+    status: document.getElementById('fStatus').value,
+    level: document.getElementById('fLevel').value,
+    deviceId: document.getElementById('fDevice').value,
+  });
+  try {
+    const data = await api('/api/alerts?' + qs.toString());
+    document.getElementById('rows').innerHTML = data.records.map(r => `
+      <tr>
+        <td>${levelBadge(r.level)}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td>${esc(r.deviceCode)}<br><span style="color:var(--muted);font-size:11px">${esc(r.deviceName)}</span></td>
+        <td>${esc(r.metricName)}</td>
+        <td>${fmtVal(r.triggerValue)}</td>
+        <td>${fmtVal(r.maxValue)}</td>
+        <td>${r.fireCount}</td>
+        <td>${r.suppressedCount > 0 ? `<span class="badge b-cyan">${r.suppressedCount}</span>` : '0'}</td>
+        <td>${fmtTime(r.firstFiredAt)}</td>
+        <td>${r.status === 'FIRING' ? `<button class="btn small" onclick="ack(${r.id})">确认</button>` : ''}
+            ${r.status !== 'RESOLVED' ? `<button class="btn small danger" onclick="resolve(${r.id})">关闭</button>` : ''}
+            <div style="color:var(--muted);font-size:11px">${esc(r.remark || '')}</div></td>
+      </tr>`).join('') || '<tr><td colspan="10" style="text-align:center;color:var(--muted)">暂无数据</td></tr>';
+    const pages = Math.max(1, Math.ceil(data.total / SIZE));
+    totalPages = pages;
+    document.getElementById('pgInfo').textContent = `第 ${page}/${pages} 页，共 ${data.total} 条`;
+  } catch (e) { if (!silent) toast(e.message); }
+}
+
+async function ack(id) {
+  try { await api(`/api/alerts/${id}/ack`, { method: 'POST' }); toast('已确认'); load(page, true); }
+  catch (e) { toast(e.message); }
+}
+function resolve(id) {
+  openModal(`<h3>关闭告警</h3>
+    <div class="form-row"><div><label class="f">备注（可选）</label><input id="resRemark" placeholder="如：已现场处理"></div></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">取消</button>
+    <button class="btn primary" onclick="doResolve(${id})">确认关闭</button></div>`);
+}
+async function doResolve(id) {
+  try {
+    await api(`/api/alerts/${id}/resolve`, { method: 'POST',
+      body: JSON.stringify({ remark: document.getElementById('resRemark').value }) });
+    closeModal(); toast('已关闭'); load(page, true);
+  } catch (e) { toast(e.message); }
+}
+
+init();
+</script>
+</body>
+</html>

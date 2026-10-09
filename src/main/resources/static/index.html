@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实时监控 - DeviceWatch</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<script src="/js/common.js?v=2"></script>
+<script src="/js/echarts.min.js"></script>
+<script>
+requireLogin();
+const el = renderLayout('index.html', '实时监控大屏');
+el.innerHTML = `
+  <div class="grid kpis" id="kpis" style="margin-bottom:14px"></div>
+  <div class="card" style="margin-bottom:14px">
+    <h3>实时告警滚动</h3>
+    <div class="ticker"><div class="ticker-inner" id="ticker">暂无告警，设备运行正常</div></div>
+  </div>
+  <div class="grid" style="grid-template-columns: 1fr 1fr; margin-bottom:14px">
+    <div class="card"><h3>24 小时告警趋势</h3><div class="chart" id="trendChart"></div></div>
+    <div class="card"><h3>设备健康度（分数越低越差）</h3><div class="chart" id="healthChart"></div></div>
+  </div>
+  <div class="card">
+    <h3>设备实时状态 <span style="color:var(--muted);font-weight:400;font-size:12px">（点击卡片查看历史曲线）</span></h3>
+    <div class="grid dev-grid" id="devGrid"></div>
+  </div>`;
+
+const devices = new Map(); // code -> {info, latest}
+let trendChart, healthChart;
+let gridDirty = false;
+
+async function loadAll() {
+  const [overview, snapshot, trend, health] = await Promise.all([
+    api('/api/dashboard/overview'),
+    api('/api/dashboard/snapshot'),
+    api('/api/dashboard/alert-trend'),
+    api('/api/dashboard/device-health'),
+  ]);
+  renderKpis(overview);
+  snapshot.forEach(d => devices.set(d.code, { info: d, latest: d.latest || {} }));
+  renderGrid();
+  renderTrend(trend);
+  renderHealth(health);
+}
+
+function renderKpis(o) {
+  document.getElementById('kpis').innerHTML = `
+    <div class="card kpi"><div class="l">设备总数</div><div class="v">${o.deviceTotal}</div></div>
+    <div class="card kpi"><div class="l">在线</div><div class="v" style="color:var(--green)">${o.online}</div></div>
+    <div class="card kpi"><div class="l">告警中设备</div><div class="v" style="color:var(--red)">${o.alarm}</div></div>
+    <div class="card kpi"><div class="l">离线</div><div class="v" style="color:var(--muted)">${o.offline}</div></div>
+    <div class="card kpi"><div class="l">未处理告警</div><div class="v" style="color:var(--warn)">${o.firing}</div></div>
+    <div class="card kpi"><div class="l">今日告警</div><div class="v">${o.todayAlerts}</div></div>`;
+}
+
+function renderGrid() {
+  const g = document.getElementById('devGrid');
+  g.innerHTML = [...devices.values()].map(({ info, latest }) => {
+    const metrics = Object.entries(latest).map(([code, v]) => `
+      <div class="m"><div class="n">${esc(metricName(info.type, code))}</div>
+      <div class="val">${fmtVal(v)}</div></div>`).join('');
+    return `<div class="card dev-card" data-code="${esc(info.code)}" onclick="showHistory(${info.id}, this)">
+      <div class="head"><span class="code">${esc(info.code)}</span>${devStatusBadge(info.status)}</div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">${esc(info.name)} · ${esc(info.typeName)}</div>
+      <div class="metrics">${metrics || '<div class="m"><div class="n">等待数据…</div></div>'}</div>
+    </div>`;
+  }).join('');
+}
+
+let metricMeta = {};
+async function loadMeta() {
+  const meta = await api('/api/devices/meta');
+  metricMeta = meta.metrics;
+}
+function metricName(type, code) {
+  const m = (metricMeta[type] || []).find(x => x.code === code);
+  return m ? `${m.name}(${m.unit})` : code;
+}
+
+function chartOf(id) {
+  const dom = document.getElementById(id);
+  return echarts.getInstanceByDom(dom) || echarts.init(dom);
+}
+
+function renderTrend(trend) {
+  trendChart = chartOf('trendChart');
+  trendChart.setOption({
+    backgroundColor: 'transparent',
+    textStyle: { color: '#7d8cab' },
+    tooltip: { trigger: 'axis' },
+    legend: { textStyle: { color: '#7d8cab' } },
+    grid: { left: 40, right: 10, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: trend.map(t => t.time.substring(6)) },
+    yAxis: { type: 'value' },
+    series: [
+      { name: '一般', type: 'bar', stack: 'a', data: trend.map(t => t.warn), itemStyle: { color: '#f59e0b' } },
+      { name: '严重', type: 'bar', stack: 'a', data: trend.map(t => t.critical), itemStyle: { color: '#ef4444' } },
+    ],
+  });
+}
+
+function renderHealth(health) {
+  healthChart = chartOf('healthChart');
+  const worst = health.slice(0, 8);
+  healthChart.setOption({
+    backgroundColor: 'transparent',
+    textStyle: { color: '#7d8cab' },
+    tooltip: {},
+    grid: { left: 90, right: 30, top: 10, bottom: 20 },
+    xAxis: { type: 'value', max: 100 },
+    yAxis: { type: 'category', data: worst.map(h => h.code) },
+    series: [{
+      type: 'bar', data: worst.map(h => ({
+        value: h.score,
+        itemStyle: { color: h.score >= 80 ? '#10b981' : h.score >= 50 ? '#f59e0b' : '#ef4444' },
+      })),
+      label: { show: true, position: 'right', color: '#7d8cab' },
+    }],
+  });
+}
+
+/* WebSocket 实时推送 */
+function connectWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/monitor`);
+  ws.onmessage = ev => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'telemetry') {
+        const d = devices.get(msg.deviceCode);
+        if (d) {
+          d.latest[msg.metric] = msg.value;
+          gridDirty = true; // 节流：2 秒集中刷一次
+        }
+      } else if (msg.type === 'alert') {
+        const t = document.getElementById('ticker');
+        const item = `<span class="badge ${msg.level === 'CRITICAL' ? 'b-critical' : 'b-warn'}" style="margin:0 8px">${esc(msg.deviceCode)} ${esc(msg.ruleName)} 值=${fmtVal(msg.value)}</span>`;
+        t.innerHTML = t.textContent.includes('暂无告警') ? item : item + t.innerHTML;
+        toast(`告警：${msg.deviceCode} ${msg.ruleName}`);
+        // 刷新设备状态徽标
+        loadAll();
+      } else if (msg.type === 'alert-status') {
+        loadAll();
+      }
+    } catch (e) {}
+  };
+  ws.onclose = () => setTimeout(connectWs, 3000);
+}
+
+let histCode = null; // 当前历史曲线弹窗的设备编码（避免把 code 拼进 inline handler）
+async function showHistory(deviceId, cardEl) {
+  const code = cardEl.dataset.code;
+  histCode = code;
+  const d = devices.get(code);
+  const metrics = Object.keys(d.latest);
+  if (!metrics.length) { toast('暂无历史数据'); return; }
+  const metric = metrics[0];
+  const h = await api(`/api/dashboard/history?deviceId=${deviceId}&metricCode=${metric}&minutes=60`);
+  openModal(`
+    <h3>${esc(code)} · ${esc(h.metricName)} 历史曲线（1小时）</h3>
+    <div class="chart" id="hChart" style="height:260px"></div>
+    <div class="form-row"><label class="f">测点</label>
+      <select id="hMetric" onchange="reloadHistory(${deviceId})">
+        ${metrics.map(m => `<option value="${m}" ${m === metric ? 'selected' : ''}>${esc(metricName(d.info.type, m))}</option>`).join('')}
+      </select></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">关闭</button></div>`);
+  drawHistory(h);
+}
+async function reloadHistory(deviceId) {
+  const metric = document.getElementById('hMetric').value;
+  const h = await api(`/api/dashboard/history?deviceId=${deviceId}&metricCode=${metric}&minutes=60`);
+  drawHistory(h);
+}
+function drawHistory(h) {
+  const c = chartOf('hChart');
+  c.setOption({
+    backgroundColor: 'transparent', textStyle: { color: '#7d8cab' },
+    tooltip: { trigger: 'axis', valueFormatter: v => fmtVal(v) },
+    grid: { left: 50, right: 16, top: 20, bottom: 30 },
+    xAxis: { type: 'category', data: h.points.map(p => p.ts) },
+    yAxis: { type: 'value', name: h.unit, axisLabel: { formatter: v => fmtVal(v) } },
+    series: [{ type: 'line', data: h.points.map(p => p.value), smooth: true,
+      itemStyle: { color: '#22d3ee' }, areaStyle: { opacity: .12 } }],
+  });
+}
+
+(async () => { await loadMeta(); await loadAll(); connectWs(); setInterval(loadAll, 30000); })();
+setInterval(() => { if (gridDirty) { gridDirty = false; renderGrid(); } }, 2000);
+window.addEventListener('resize', () => { trendChart && trendChart.resize(); healthChart && healthChart.resize(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:device_watch;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+      schema-locations: classpath:schema.sql
+      data-locations: classpath:data.sql
+  kafka:
+    bootstrap-servers: localhost:9092
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+
+devicewatch:
+  kafka.enabled: false
+  simulator.fault-rate: 0.08
+  offline-timeout-seconds: 90
+  escalate-check-minutes: 30
+
+logging:
+  level:
+    com.devicewatch: INFO

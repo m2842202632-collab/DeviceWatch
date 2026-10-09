@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - DeviceWatch 设备智能监控</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-box card">
+    <h2>Device<span style="color:var(--accent)">Watch</span></h2>
+    <p class="sub">设备智能监控告警平台</p>
+    <input id="username" placeholder="用户名" value="admin" autocomplete="username">
+    <input id="password" type="password" placeholder="密码" value="123456" autocomplete="current-password">
+    <button class="btn primary" onclick="doLogin()">登 录</button>
+    <p class="hint">演示账号：admin / 123456</p>
+  </div>
+</div>
+<div id="toast"></div>
+<script src="/js/common.js?v=2"></script>
+<script>
+async function doLogin() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const body = await res.json();
+    if (body.code !== 0) throw new Error(body.msg);
+    localStorage.setItem(TOKEN_KEY, body.data.token);
+    location.href = '/index.html';
+  } catch (e) { toast(e.message); }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+</script>
+</body>
+</html>

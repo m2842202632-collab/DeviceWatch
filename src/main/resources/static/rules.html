@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规则管理 - DeviceWatch</title>
+<link rel="stylesheet" href="/css/common.css">
+</head>
+<body>
+<script src="/js/common.js?v=2"></script>
+<script>
+requireLogin();
+const el = renderLayout('rules.html', '告警规则管理');
+el.innerHTML = `
+  <div class="card" style="margin-bottom:14px">
+    <h3>规则说明</h3>
+    <div style="color:var(--muted);font-size:13px;line-height:1.9">
+      连续超标 <b style="color:var(--text)">N</b> 次才触发（防抖，偶发毛刺不告警）；
+      触发后 <b style="color:var(--text)">静默期</b>内重复超标只计数不打扰（防告警风暴）；
+      测点恢复正常后自动关闭；WARN 告警 <b style="color:var(--text)">超时未确认自动升级</b>为严重。
+      规则修改即时生效（内存缓存 + 状态清理）。
+    </div>
+  </div>
+  <div class="card">
+    <div class="toolbar">
+      <input id="kw" placeholder="规则名称搜索" style="width:220px">
+      <button class="btn primary" onclick="load(1)">查询</button>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="showEdit()">+ 新增规则</button>
+    </div>
+    <table class="tbl"><thead><tr>
+      <th>规则名称</th><th>设备范围</th><th>条件</th><th>连续次数</th><th>级别</th>
+      <th>静默(分)</th><th>升级(分)</th><th>启用</th><th>操作</th>
+    </tr></thead><tbody id="rows"></tbody></table>
+    <div class="pager"><span id="pgInfo"></span>
+      <button class="btn small" onclick="load(page-1)">上一页</button>
+      <button class="btn small" onclick="load(Math.min(page+1, totalPages))">下一页</button>
+    </div>
+  </div>`;
+
+let page = 1, meta = null, devMap = {}, totalPages = 1;
+const SIZE = 15;
+const rowCache = {}; // id -> 行对象，编辑按钮用 id 查，避免把 JSON 拼进 onclick 导致引号炸裂
+
+async function init() {
+  meta = await api('/api/devices/meta');
+  const devs = await api('/api/devices/all');
+  devMap = Object.fromEntries(devs.map(d => [d.id, d.code]));
+  await load(1);
+}
+
+async function load(p) {
+  if (p < 1) return;
+  page = p;
+  const qs = new URLSearchParams({ page, size: SIZE, keyword: document.getElementById('kw').value });
+  try {
+    const data = await api('/api/rules?' + qs.toString());
+    data.records.forEach(r => rowCache[r.id] = r);
+    document.getElementById('rows').innerHTML = data.records.map(r => `
+      <tr>
+        <td><b>${esc(r.name)}</b></td>
+        <td>${r.deviceId ? esc(devMap[r.deviceId] || r.deviceId) : '<span class="badge b-cyan">全部设备</span>'}</td>
+        <td>${esc(r.metricCode)} ${r.operator === 'GT' ? '&gt;' : '&lt;'} ${r.threshold}</td>
+        <td>${r.durationTimes}</td><td>${levelBadge(r.level)}</td>
+        <td>${r.silenceMinutes}</td><td>${r.escalateMinutes || '-'}</td>
+        <td><button class="btn small ${r.enabled ? '' : 'danger'}" onclick="toggle(${r.id}, ${!r.enabled})">${r.enabled ? '启用中' : '已停用'}</button></td>
+        <td><button class="btn small" onclick="showEdit(rowCache[${r.id}])">编辑</button>
+            <button class="btn small danger" onclick="del(${r.id})">删除</button></td>
+      </tr>`).join('') || '<tr><td colspan="9" style="text-align:center;color:var(--muted)">暂无数据</td></tr>';
+    totalPages = Math.max(1, Math.ceil(data.total / SIZE));
+    document.getElementById('pgInfo').textContent = `第 ${page}/${totalPages} 页，共 ${data.total} 条`;
+  } catch (e) { toast(e.message); }
+}
+
+function metricOptions(selected) {
+  const codes = {};
+  Object.values(meta.metrics).flat().forEach(m => codes[m.code] = m.name);
+  return Object.entries(codes).map(([c, n]) => `<option value="${c}" ${c === selected ? 'selected' : ''}>${n}(${c})</option>`).join('');
+}
+
+async function showEdit(r) {
+  const isNew = !r;
+  r = r || { operator: 'GT', level: 'WARN', durationTimes: 3, silenceMinutes: 10, escalateMinutes: 30, enabled: true };
+  const devs = await api('/api/devices/all');
+  openModal(`<h3>${isNew ? '新增规则' : '编辑规则'}</h3>
+    <div class="form-row"><div style="flex:2"><label class="f">规则名称 *</label><input id="rName" value="${esc(r.name || '')}"></div>
+      <div><label class="f">级别</label><select id="rLevel">
+        <option value="WARN" ${r.level === 'WARN' ? 'selected' : ''}>一般</option>
+        <option value="CRITICAL" ${r.level === 'CRITICAL' ? 'selected' : ''}>严重</option></select></div></div>
+    <div class="form-row"><div><label class="f">设备范围</label><select id="rDevice">
+        <option value="">全部设备</option>
+        ${devs.map(d => `<option value="${d.id}" ${r.deviceId === d.id ? 'selected' : ''}>${esc(d.code)}</option>`).join('')}
+      </select></div>
+      <div><label class="f">测点</label><select id="rMetric">${metricOptions(r.metricCode)}</select></div></div>
+    <div class="form-row"><div><label class="f">比较符</label><select id="rOp">
+        <option value="GT" ${r.operator === 'GT' ? 'selected' : ''}>大于 (&gt;)</option>
+        <option value="LT" ${r.operator === 'LT' ? 'selected' : ''}>小于 (&lt;)</option></select></div>
+      <div><label class="f">阈值 *</label><input id="rThr" type="number" step="0.01" value="${r.threshold == null ? '' : r.threshold}"></div>
+      <div><label class="f">连续超标次数</label><input id="rDur" type="number" min="1" value="${r.durationTimes}"></div></div>
+    <div class="form-row"><div><label class="f">静默期(分钟)</label><input id="rSil" type="number" min="0" value="${r.silenceMinutes}"></div>
+      <div><label class="f">升级时间(分钟,0=不升级)</label><input id="rEsc" type="number" min="0" value="${r.escalateMinutes}"></div></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveEdit(${isNew ? 'null' : r.id})">保存</button></div>`);
+}
+
+async function saveEdit(id) {
+  const dv = document.getElementById('rDevice').value;
+  const body = {
+    name: document.getElementById('rName').value.trim(),
+    deviceId: dv ? Number(dv) : null,
+    metricCode: document.getElementById('rMetric').value,
+    operator: document.getElementById('rOp').value,
+    threshold: parseFloat(document.getElementById('rThr').value),
+    durationTimes: parseInt(document.getElementById('rDur').value),
+    level: document.getElementById('rLevel').value,
+    silenceMinutes: parseInt(document.getElementById('rSil').value),
+    escalateMinutes: parseInt(document.getElementById('rEsc').value),
+    enabled: true,
+  };
+  try {
+    await api(id ? `/api/rules/${id}` : '/api/rules', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    closeModal(); toast('保存成功，规则已即时生效'); load(page);
+  } catch (e) { toast(e.message); }
+}
+
+async function toggle(id, enabled) {
+  try { await api(`/api/rules/${id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled }) }); load(page); }
+  catch (e) { toast(e.message); }
+}
+async function del(id) {
+  if (!confirm('确认删除该规则吗？')) return;
+  try { await api(`/api/rules/${id}`, { method: 'DELETE' }); toast('已删除'); load(1); }
+  catch (e) { toast(e.message); }
+}
+
+init();
+</script>
+</body>
+</html>
